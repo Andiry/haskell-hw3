@@ -110,13 +110,85 @@ You can ignore the bits about `StateT` for now.
 
 Use monad transformers to write a function
 
-> evalS :: (MonadState Store m, MonadError Value m, MonadWriter String m) => Statement -> m ()
-> evalS = error "TODO"
+> evalE :: (MonadState Store m, MonadError Value m) => Expression -> m Value
 
-and use the above function to implement a second function
+> evalE (Var x)      = do
+>		store <- get
+>		case Data.Map.lookup x store of
+>			Just n  -> return n
+>			Nothing -> throwError $ IntVal 0
+> evalE (Val v)      = return v 
+> evalE (Op o e1 e2) = do v1 <- evalE(e1)
+>			  v2 <- evalE(e2)
+>			  evalOp v1 v2 where
+>		evalOp (IntVal v1) (IntVal v2) = case o of
+>			Plus	-> return $ IntVal  $ v1 + v2
+>			Minus	-> return $ IntVal  $ v1 - v2
+>			Times	-> return $ IntVal  $ v1 * v2
+>			Divide	->
+>				case v2 of
+>				0 -> throwError $ IntVal 1
+>				otherwise -> return $ IntVal $ v1 `div` v2
+>			Gt	-> return $ BoolVal $ v1 > v2
+>			Ge	-> return $ BoolVal $ v1 >= v2
+>			Lt	-> return $ BoolVal $ v1 < v2
+>			Le	-> return $ BoolVal $ v1 <= v2
+>		evalOp _ _ = throwError $ IntVal 2
+
+
+> evalS :: (MonadState Store m, MonadError Value m, MonadWriter String m) => Statement -> m ()
+
+
+> evalS w@(While e s)    = do
+>               val <- evalE(e)
+>               case val of
+>                       IntVal _   -> throwError $ IntVal 2
+>                       BoolVal val | val -> do
+>                                       evalS s
+>                                       evalS $ While e s
+>                                   | not val -> do
+>                                       evalS Skip
+> evalS Skip             = return ()
+> evalS (Sequence s1 s2) = do
+>               evalS s1
+>               evalS s2
+> evalS (Assign x e )    = do
+>               store <- get
+>               val <- evalE(e)
+>               put $ Data.Map.insert x val store
+> evalS (If e s1 s2)     = do
+>               val <- evalE(e)
+>               case val of
+>                       IntVal _   -> throwError $ IntVal 2
+>                       BoolVal val | val -> evalS s1
+>                                   | not val -> evalS s2
+> evalS (Throw e)	= do
+>		val <- evalE(e)
+>		throwError val
+> evalS (Print s e)	= do
+>		val1 <- runErrorT $ evalE e
+>		case val1 of
+>			Left _ 	  -> tell $ s
+>			Right val -> tell $ s ++ show val
+> evalS (Try s x h)	= do
+>		err1 <- runErrorT $ evalS s
+>		case err1 of
+>			Left err -> do evalS $ Assign x $ Val err
+>				       evalS h
+>			Right _  -> return ()
+
+> instance Error Value
+> type Eval = ErrorT Value (WriterT String (State Store))
+
+> eval :: Statement -> Eval ()
+> eval = evalS
 
 > execute :: Store -> Statement -> (Store, Maybe Value, String)
-> execute = error "TODO"
+> execute st stmt = (st', val, log) where
+>	((ret, log), st') = runState (runWriterT (runErrorT (eval stmt))) st
+>	val = case ret of
+>		Left v  -> Just v
+>		Right _ -> Nothing
 
 such that `execute st s` returns a triple `(st', exn, log)` where 
 
@@ -260,7 +332,7 @@ Next, we have some helpers that can help us simulate a circuit by showing
 how it behaves over time. For testing or printing, we truncate a signal to 
 a short prefix 
 
-> truncatedSignalSize = 2
+> truncatedSignalSize = 20
 > truncateSig bs = take truncatedSignalSize bs
 > 
 > instance Show Signal where
@@ -457,7 +529,7 @@ And we can specify the correctness of the adder circuit by
 
 > prop_Adder_Correct ::  [Bool] -> [Bool] -> Bool
 > prop_Adder_Correct l1 l2 = 
->  binary (sampleN sum) == binary l1 + binary l2
+>   binary (sampleN sum) == binary l1 + binary l2
 >   where sum = adder (map lift0 l1, map lift0 l2) 
 
 Problem: Subtraction
@@ -469,75 +541,48 @@ number and a single bit to be subtracted from it and yields as
 outputs an N-bit binary number. Subtracting one from zero should
 yield zero.
 
-**** Please delete these comments - Only for your reference *****
-
--- Works fine
-1) The method halfSubtract, performs binary subtraction of 2 bits. 
-diff = The difference
-bout = The borrow
-I just followed the truth table from Wikipedia 
-
--- Works fine
-2) The method fullSubtract performs binary subtraction of 2 bits with a borrow-in
-bin = borrow in
-x, y = The input, we need x - y
-bout = borrow out
-
-Again, I followed the equations and truth table from Wikipedia
-
--- Seems to work, but according to the HW spec, 0 - 1 should yield 0. This is not happening.
-3) The bitSubtractor takes an n-bit binary number N and a single bit b, and subtracts N - b
-
-4) The method prop_bitSubtractor_Correct is a test method
-It should take a single bit 'b' and an n-bit number N and check that 
-N - b == bitSubtractor (b, N)
-I have not written this still as I m not sure about bitSubtractor.
-
-****** Comments end here ********
-
-
 > halfsubtract :: (Signal, Signal) -> (Signal, Signal)
-> halfsubtract (x,y) = (diff, bout)
+> halfsubtract (x, y) = (diff, bout)
 >	where diff = xor2 (x, y)
 >	      bout = and2 (lift1 not x, y)
 
 > fullsubtract :: (Signal, Signal, Signal) -> (Signal, Signal)
 > fullsubtract (bin, x, y) = (diff, bout)
 >	where (diff1, b1) = halfsubtract (bin, x)
->	      (diff, b2) = halfsubtract (diff1, y)
->	      bout = or2 (b2, b1)
+>	      (diff, b2)  = halfsubtract (diff1, y)
+>	      bout	  = or2 (b2, b1)
+
 > test1s = probe [("bin",bin), ("x",x), ("y",y), ("  diff",diff), ("bout",bout)]
->	where bin = high
->	      x   = low
->	      y   = high
+>       where bin = high
+>             x   = low
+>             y   = high
 >             (diff, bout) = fullsubtract (bin, x, y)
 
 > prop_bitSubtractor_Correct ::  Signal -> [Bool] -> Bool
 > prop_bitSubtractor_Correct bin xs =
 >	binary (sampleN out) == binary xs - binary (sample1 bin)
 >	where (out, bout) = bitSubtractor (bin, map lift0 xs)
- 
 
 2. Using the `bitAdder` circuit as a model, deﬁne a `bitSubtractor` 
 circuit that implements this functionality and use QC to check that 
 your behaves correctly.
 
 > bitSubtractor :: (Signal, [Signal]) -> ([Signal], Signal)
-> bitSubtractor (bin, [])    = ([], bin)
-> bitSubtractor (bin, x:xs)  = (diff:diffs, bout)
->	where (diff, b)      = halfsubtract (x, bin)
->	      (diffs, bout)  = bitSubtractor (b, xs)
->
+> bitSubtractor (bin, [])	= ([], bin)
+> bitSubtractor (bin, x:xs)	= (diff:diffs, bout)
+>	where (diff, b)		= halfsubtract (x, bin)
+>	      (diffs, bout)	= bitSubtractor (b, xs)
+
 > test3 = probe [ ("bin",bin), ("in1",in1), ("in2",in2), ("in3",in3),
-> 		  ("in4",in4), ("  s1",s1), ("s2",s2), ("s3",s3),
->		  ("s4",s4), ("b",b) ]
->	where 
->		bin = high
->		in1 = high
->		in2 = high
->		in3 = low
->		in4 = high
->		([s1,s2,s3,s4], b) = bitSubtractor (bin, [in1,in2,in3,in4]) 
+>                 ("in4",in4), ("  s1",s1), ("s2",s2), ("s3",s3),
+>                 ("s4",s4), ("b",b) ]
+>       where
+>               bin = high
+>               in1 = high
+>               in2 = high
+>               in3 = low
+>               in4 = high
+>               ([s1,s2,s3,s4], b) = bitSubtractor (bin, [in1,in2,in3,in4])
 
 
 Problem: Multiplication
@@ -549,8 +594,8 @@ width as input and outputs their product.
 
 > prop_Multiplier_Correct ::  [Bool] -> [Bool] -> Bool
 > prop_Multiplier_Correct l1 l2 =
-> 	binary (sampleN product) == binary l1 * binary l2
->	  where product = multiplier (map lift0 l1, map lift0 l2)
+>	binary (sampleN product) == binary l1 * binary l2
+>		where product = multiplier (map lift0 l1, map lift0 l2)
 
 4. Deﬁne a `multiplier` circuit and check that it satisﬁes your 
 speciﬁcation. (Looking at how adder is deﬁned will help with this, 
@@ -568,8 +613,8 @@ binary numbers on paper.)
 > multiplier ([], xs) = []
 > multiplier (ys, []) = []
 > multiplier (ys, x:xs) = adder (first, rest)
->			where first = multiply1bit (sample1 x, ys)
->			      rest = low : multiplier (ys, xs)
+>                       where first = multiply1bit (sample1 x, ys)
+>                             rest = low : multiplier (ys, xs)
 
 [1]: http://www.cis.upenn.edu/~bcpierce/courses/552-2008/resources/circuits.hs
 
