@@ -41,6 +41,10 @@ questions about the assignment, post to Piazza.
 
 > quickCheckN n = quickCheckWith $ stdArgs { maxSuccess = n}
 
+> myName  = "Jian Xu"
+> myEmail = "jix024@cs.ucsd.edu"
+> mySID   = "A53026658"
+
 Problem 1: An Interpreter for WHILE++ 
 =====================================
 
@@ -169,7 +173,7 @@ Use monad transformers to write a function
 >		val1 <- runErrorT $ evalE e
 >		case val1 of
 >			Left _ 	  -> tell $ s
->			Right val -> tell $ s ++ show val
+>			Right val -> tell $ s ++ show val ++ "\n"
 > evalS (Try s x h)	= do
 >		err1 <- runErrorT $ evalS s
 >		case err1 of
@@ -544,7 +548,8 @@ yield zero.
 > halfsubtract :: (Signal, Signal) -> (Signal, Signal)
 > halfsubtract (x, y) = (diff, bout)
 >	where diff = xor2 (x, y)
->	      bout = and2 (lift1 not x, y)
+>             notx = xor2(x,high)
+>	      bout = and2 (notx, y)
 
 > fullsubtract :: (Signal, Signal, Signal) -> (Signal, Signal)
 > fullsubtract (bin, x, y) = (diff, bout)
@@ -560,18 +565,51 @@ yield zero.
 
 > prop_bitSubtractor_Correct ::  Signal -> [Bool] -> Bool
 > prop_bitSubtractor_Correct bin xs =
->	binary (sampleN out) == binary xs - binary (sample1 bin)
+>       case binary xs of 
+>         0   -> binary (sampleN out) == 0 
+>         ys  -> binary (sampleN out) ==  ys - binary (sample1 bin) 
 >	where (out, bout) = bitSubtractor (bin, map lift0 xs)
 
 2. Using the `bitAdder` circuit as a model, deﬁne a `bitSubtractor` 
 circuit that implements this functionality and use QC to check that 
 your behaves correctly.
 
+We append a low bit to the begining of the input [Signal] before we subtract. But this for subtractor not bitSubtractor
+
+> ones' :: [Signal] -> [Signal] 
+> ones'  []        = []
+> ones'  (x:xs)    = notx : ys 
+>	where notx = xor2(x,high) 
+>             ys   = ones' xs          
+
+> twos' :: [Signal] -> [Signal]
+> twos' []    = []
+> twos' xs    = ys 
+> 	where ones = ones' xs 
+>             cin  = high
+>             (ys,_) = bitAdder (cin, ones)
+
+> subtractor :: (Signal, [Signal]) -> [Signal]
+> subtractor (bin, []) = []
+> subtractor (bin, xs) = ys
+> 	where subs = take (length xs + 1) (repeat low)
+> 	      (bins, _) = bitAdder (bin, subs) 
+>             twos = twos' bins
+> 	      xs'  = xs ++ [low]
+>             ys   = take (length xs') $ adder (xs', twos)  
+> 
 > bitSubtractor :: (Signal, [Signal]) -> ([Signal], Signal)
-> bitSubtractor (bin, [])	= ([], bin)
-> bitSubtractor (bin, x:xs)	= (diff:diffs, bout)
->	where (diff, b)		= halfsubtract (x, bin)
->	      (diffs, bout)	= bitSubtractor (b, xs)
+> bitSubtractor (bin, []) = ([], bin)
+> bitSubtractor (bin, xs) = 
+> 	case binary (sample1 y) of
+> 		0 -> (ys, y)
+> 		1 -> (xs, y)
+> 	where ys' = subtractor (bin, xs)
+>             y   = last ys' 
+>             ys  = take (length xs) ys'      
+ 
+
+Based on TA response, if the result borrow is 0, then diff is correct. 
 
 > test3 = probe [ ("bin",bin), ("in1",in1), ("in2",in2), ("in3",in3),
 >                 ("in4",in4), ("  s1",s1), ("s2",s2), ("s3",s3),
@@ -579,9 +617,9 @@ your behaves correctly.
 >       where
 >               bin = high
 >               in1 = high
->               in2 = high
+>               in2 = low
 >               in3 = low
->               in4 = high
+>               in4 = low
 >               ([s1,s2,s3,s4], b) = bitSubtractor (bin, [in1,in2,in3,in4])
 
 
